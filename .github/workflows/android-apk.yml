@@ -1,0 +1,63 @@
+name: android-apk
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/android-apk
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            apps/mobile/package-lock.json
+            companion/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm run setup
+
+      - name: Generate android project (expo prebuild)
+        working-directory: apps/mobile
+        run: npx expo prebuild -p android --no-install
+
+      - name: Build release APK (arm64-v8a)
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --console=plain -PreactNativeArchitectures=arm64-v8a --no-daemon
+
+      - name: Sign APK with debug keystore
+        working-directory: apps/mobile/android/app/build/outputs/apk/release
+        run: |
+          set -e
+          ls -la
+          APK=$(ls app-release*.apk | head -1)
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          KS="$GITHUB_WORKSPACE/apps/mobile/android/app/debug.keystore"
+          test -f "$KS" || { echo "debug.keystore missing after prebuild"; exit 1; }
+          "$BT/zipalign" -f -p 4 "$APK" aligned.apk
+          "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out ds-bot-mobile-0.1.7-arm64.apk aligned.apk
+          "$BT/apksigner" verify ds-bot-mobile-0.1.7-arm64.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ds-bot-mobile-arm64-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/ds-bot-mobile-0.1.7-arm64.apk
+          if-no-files-found: error
